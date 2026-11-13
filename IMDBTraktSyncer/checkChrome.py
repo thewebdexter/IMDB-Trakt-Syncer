@@ -6,14 +6,16 @@ import sys
 import time
 import subprocess
 import stat
+import functools
 from requests.exceptions import RequestException
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from IMDBTraktSyncer import errorHandling as EH
+from IMDBTraktSyncer import runtime
 
 def get_main_directory():
-    directory = os.path.dirname(os.path.realpath(__file__))
-    return directory
+    # Defaults to the package directory, or IMDBTRAKTSYNCER_DATA_DIR when set
+    return runtime.get_data_directory()
     
 def get_browser_type():
     # Change browser type
@@ -121,7 +123,10 @@ def grant_permissions(path: Path):
                 print(f"Error modifying permissions for {item_path}: {e}")
 
 def get_user_data_directory():
-    directory = os.path.dirname(os.path.realpath(__file__))  # Current script's directory
+    if runtime.use_system_chrome():
+        return Path(runtime.get_system_chrome_user_data_directory())
+
+    directory = get_main_directory()
     version = get_latest_stable_version()  # Assuming this function exists and returns a version string
 
     # Path to the version directory
@@ -148,7 +153,9 @@ def get_user_data_directory():
 
     return user_data_directory
 
+@functools.lru_cache(maxsize=1)
 def get_latest_stable_version():
+    # Cached: only one network lookup per run
     # Step 1: Get the latest stable version
     stable_url = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json"
     stable_response = EH.make_request_with_retries(stable_url)
@@ -158,6 +165,7 @@ def get_latest_stable_version():
     
     return stable_version
     
+@functools.lru_cache(maxsize=4)
 def get_version_data(version):
     # Step 1: Fetch the data from the URL
     versions_url = "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json"
@@ -183,6 +191,9 @@ def get_platform():
     elif system == "darwin":
         return "mac-arm64" if "arm" in arch else "mac-x64"
     elif system == "linux":
+        if runtime.is_linux_arm64():
+            # Chrome for Testing has no Linux ARM64 builds; a system Chromium is used instead
+            return "linux-arm64"
         return "linux64"
     else:
         raise ValueError("Unsupported operating system")
@@ -497,6 +508,9 @@ def remove_old_versions(main_directory, latest_version, browser_type):
             try_remove(version_dir)
 
 def get_chrome_binary_path(main_directory):
+    if runtime.use_system_chrome():
+        return runtime.get_system_chrome_paths()[0]
+
     version = get_latest_stable_version()
 
     # Build the path to the version directory
@@ -543,6 +557,9 @@ def get_chrome_binary_path(main_directory):
     raise FileNotFoundError(f"No valid Chrome binary found for platform {platform_key} in {chrome_dir}")
     
 def get_chromedriver_binary_path(main_directory):
+    if runtime.use_system_chrome():
+        return runtime.get_system_chrome_paths()[1]
+
     version = get_latest_stable_version()
 
     chromedriver_dir = Path(main_directory) / "Chromedriver" / version
@@ -643,6 +660,15 @@ def clear_selenium_manager_cache():
         print("An unexpected error occurred:", e)
 
 def checkChrome():
+    if runtime.use_system_chrome():
+        # Use the system installed Chromium/Chrome + chromedriver (required on Linux ARM64)
+        chrome_path, driver_path = runtime.get_system_chrome_paths()
+        print(f"Using system browser: {chrome_path} (driver: {driver_path})")
+        return
+
+    if get_platform() == "linux-arm64":
+        raise RuntimeError("Linux ARM64 detected, but Google does not publish Chrome for Testing builds for it. Install chromium + chromium-driver and remove IMDBTRAKTSYNCER_USE_SYSTEM_CHROME=0 from your environment.")
+
     main_directory = get_main_directory()
     
     browser_type, _ = get_browser_type()

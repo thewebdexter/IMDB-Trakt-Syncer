@@ -98,6 +98,20 @@ IMDBTraktSyncer --clear-user-data --clear-cache
 6. Follow the prompts during the first run. You will need to enter your Trakt `client ID` and `client secret` from step 3, as well as your IMDB `username` and `password`. Please note that these details are saved insecurely as `credentials.txt` in the same folder as the script. It is recommended to change your IMDB password to something unique beforehand.
 7. Setup is complete. The script will continue running and syncing your ratings. You can monitor its progress in the command line. See below for [setting up automation](https://github.com/RileyXX/IMDB-Trakt-Syncer#for-setting-up-automation-see-the-following-wiki-pages).
 
+## Running 24/7 on a Server, Docker, or Linux ARM64 (e.g. Oracle Cloud Ampere)
+A Docker setup is included (`Dockerfile`, `docker-compose.yml`, `.env.example`). It runs the sync on a schedule, works natively on ARM64 and x86_64, and can be configured entirely through environment variables. See [docs/oracle-ampere-docker.md](docs/oracle-ampere-docker.md).
+
+On Linux ARM64, where Google publishes no Chrome for Testing builds, the script automatically uses a system Chromium + chromedriver (`sudo apt-get install chromium chromium-driver`). Optional environment variables:
+
+| Variable | Description |
+|---|---|
+| `IMDBTRAKTSYNCER_DATA_DIR` | Where credentials, logs, the browser profile and caches are stored (default: the package directory). |
+| `IMDBTRAKTSYNCER_USE_SYSTEM_CHROME` | `true` to use a system Chromium/Chrome instead of downloading one (automatic on Linux ARM64). |
+| `IMDBTRAKTSYNCER_CHROME_BINARY` / `IMDBTRAKTSYNCER_CHROMEDRIVER` | Explicit browser and driver paths. |
+| `IMDBTRAKTSYNCER_BLOCK_IMAGES` | `true` to skip loading images in the browser (lower CPU/RAM/bandwidth). |
+| `IMDBTRAKTSYNCER_SKIP_VERSION_CHECK` | `true` to skip the PyPI update check. |
+| `TRAKT_CLIENT_ID`, `TRAKT_CLIENT_SECRET`, `IMDB_USERNAME`, `IMDB_PASSWORD`, `SYNC_*` … | Pre-fill credentials and settings so the prompts are skipped (see `.env.example`). |
+
 ## For Setting Up Automation See the Following Wiki Pages:
 - Setup Automation for:
    - [Windows](https://github.com/RileyXX/IMDB-Trakt-Syncer/wiki/Setting-Up-Automation-on-Windows)

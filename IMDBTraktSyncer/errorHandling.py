@@ -13,9 +13,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from IMDBTraktSyncer import verifyCredentials as VC
 from IMDBTraktSyncer import errorLogger as EL
+from IMDBTraktSyncer import runtime
 
 class PageLoadException(Exception):
     pass
+
+# One shared HTTP session: reuses TLS connections instead of a new handshake for every request
+_http_session = requests.Session()
 
 def report_error(error_message):
     github_issue_url = "https://github.com/RileyXX/IMDB-Trakt-Syncer/issues/new?template=bug_report.yml"
@@ -57,13 +61,13 @@ def make_trakt_request(url, headers=None, params=None, payload=None, max_retries
             if payload is None:
                 if params:
                     # GET request with query parameters
-                    response = requests.get(url, headers=headers, params=params, timeout=connection_timeout)
+                    response = _http_session.get(url, headers=headers, params=params, timeout=connection_timeout)
                 else:
                     # GET request without query parameters
-                    response = requests.get(url, headers=headers, timeout=connection_timeout)
+                    response = _http_session.get(url, headers=headers, timeout=connection_timeout)
             else:
                 # POST request with JSON payload
-                response = requests.post(url, headers=headers, json=payload, timeout=connection_timeout)
+                response = _http_session.post(url, headers=headers, json=payload, timeout=connection_timeout)
             
             if response is not None:
                 # If request is successful, return the response
@@ -201,7 +205,9 @@ def get_page_with_retries(url, driver, wait, total_wait_time=180, initial_wait_t
 
                 remaining_time = total_wait_time - total_time_spent
                 print(f"   - Remaining time for retries: {int(remaining_time)} seconds.")
-                time.sleep(min(remaining_time, initial_wait_time))
+                sleep_time = min(remaining_time, initial_wait_time)
+                time.sleep(sleep_time)
+                total_time_spent += sleep_time  # count the wait too, or the retry budget never runs out
                 continue
                         
             elif status_code in [408, 425, 429, 500, 502, 503, 504]:
@@ -230,7 +236,9 @@ def get_page_with_retries(url, driver, wait, total_wait_time=180, initial_wait_t
 
             remaining_time = total_wait_time - total_time_spent
             print(f"   - Retrying... Time Remaining: {int(remaining_time)}s")
-            time.sleep(min(remaining_time, initial_wait_time))
+            sleep_time = min(remaining_time, initial_wait_time)
+            time.sleep(sleep_time)
+            total_time_spent += sleep_time  # count the wait too, or the retry budget never runs out
             continue
 
         except WebDriverException as e:
@@ -250,7 +258,16 @@ def get_page_with_retries(url, driver, wait, total_wait_time=180, initial_wait_t
                 "net::ERR_SSL_PROTOCOL_ERROR",
                 "net::ERR_CERT_COMMON_NAME_INVALID",
                 "net::ERR_CERT_DATE_INVALID",
-                "net::ERR_NETWORK_CHANGED"
+                "net::ERR_NETWORK_CHANGED",
+                # Transient on servers (network blips, DNS/router restarts): retry instead of aborting the whole sync
+                "net::ERR_INTERNET_DISCONNECTED",
+                "net::ERR_ADDRESS_UNREACHABLE",
+                "net::ERR_NAME_RESOLUTION_FAILED",
+                "net::ERR_TIMED_OUT",
+                "net::ERR_EMPTY_RESPONSE",
+                "net::ERR_NETWORK_IO_SUSPENDED",
+                "net::ERR_PROXY_CONNECTION_FAILED",
+                "net::ERR_TUNNEL_CONNECTION_FAILED"
             ]
 
             if any(error in str(e) for error in retryable_errors):
@@ -263,7 +280,9 @@ def get_page_with_retries(url, driver, wait, total_wait_time=180, initial_wait_t
 
                 remaining_time = total_wait_time - total_time_spent
                 print(f"   - Retryable network error detected. Retrying... Time Remaining: {int(remaining_time)}s")
-                time.sleep(min(remaining_time, initial_wait_time))
+                sleep_time = min(remaining_time, initial_wait_time)
+                time.sleep(sleep_time)
+                total_time_spent += sleep_time  # count the wait too, or the retry budget never runs out
                 continue
 
             else:
@@ -285,7 +304,9 @@ def get_page_with_retries(url, driver, wait, total_wait_time=180, initial_wait_t
 
             remaining_time = total_wait_time - total_time_spent
             print(f"   - Retryable error detected. Retrying... Time Remaining: {int(remaining_time)}s")
-            time.sleep(min(remaining_time, initial_wait_time))
+            sleep_time = min(remaining_time, initial_wait_time)
+            time.sleep(sleep_time)
+            total_time_spent += sleep_time  # count the wait too, or the retry budget never runs out
             continue
 
     print("   - All retries failed. Unable to load page.")
@@ -316,9 +337,9 @@ def make_request_with_retries(url, method="GET", headers=None, params=None, payl
         try:
             # Make the HTTP request based on the method
             if method.upper() == "GET":
-                response = requests.get(url, headers=headers, params=params, timeout=timeout, stream=stream)
+                response = _http_session.get(url, headers=headers, params=params, timeout=timeout, stream=stream)
             elif method.upper() == "POST":
-                response = requests.post(url, headers=headers, json=payload, timeout=timeout, stream=stream)
+                response = _http_session.post(url, headers=headers, json=payload, timeout=timeout, stream=stream)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
@@ -368,8 +389,43 @@ def make_request_with_retries(url, method="GET", headers=None, params=None, payl
 def clean_title(title):
     return re.sub(r'[^a-zA-Z0-9. ]', '', title).lower()
     
+# Persistent cache of IMDB_ID redirects, so the same ID is not re-resolved with a full
+# browser page load on every run. IMDB merges are permanent, so redirects are kept forever;
+# "no redirect" results are re-checked after a while in case the title gets merged later.
+_imdb_id_cache = None
+IMDB_ID_CACHE_UNCHANGED_TTL = 30 * 24 * 3600
+
+def _imdb_id_cache_path():
+    return os.path.join(runtime.get_data_directory(), "imdb_id_cache.json")
+
+def _load_imdb_id_cache():
+    global _imdb_id_cache
+    if _imdb_id_cache is None:
+        _imdb_id_cache = {}
+        try:
+            with open(_imdb_id_cache_path(), 'r', encoding='utf-8') as file:
+                data = json.load(file)
+                if isinstance(data, dict):
+                    _imdb_id_cache = data
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
+    return _imdb_id_cache
+
+def _save_imdb_id_cache():
+    if _imdb_id_cache is None:
+        return
+    try:
+        runtime.write_json_atomic(_imdb_id_cache_path(), _imdb_id_cache)
+    except OSError as e:
+        EL.logger.error(f"Failed to save IMDB ID cache: {e}")
+
 # Function to resolve IMDB_ID redirection using the driver
 def resolve_imdb_id_with_driver(imdb_id, driver, wait):
+    cache = _load_imdb_id_cache()
+    entry = cache.get(imdb_id)
+    if isinstance(entry, dict) and entry.get("id"):
+        if entry["id"] != imdb_id or time.time() - entry.get("checked", 0) < IMDB_ID_CACHE_UNCHANGED_TTL:
+            return entry["id"], driver, wait
     try:
         # Construct the IMDB URL
         url = f"https://www.imdb.com/title/{imdb_id}/"
@@ -381,6 +437,9 @@ def resolve_imdb_id_with_driver(imdb_id, driver, wait):
         
         # Extract the redirected IMDB_ID from the resolved URL
         final_imdb_id = resolved_url.split("/title/")[1].split("/")[0]
+        if re.fullmatch(r"tt\d+", final_imdb_id or ""):
+            cache[imdb_id] = {"id": final_imdb_id, "checked": int(time.time())}
+            _save_imdb_id_cache()
         return final_imdb_id, driver, wait
 
     except Exception as e:
@@ -661,8 +720,7 @@ def check_if_watch_history_limit_reached(size):
     
     '''
     # Define the file path for credentials.txt
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
     
     # Load the credentials file
     credentials = {}
@@ -711,8 +769,7 @@ def check_if_watchlist_limit_reached(size):
         bool: True if the watchlist limit has been reached, False otherwise.
     """
     # Define the file path for credentials.txt
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
     
     # Load the credentials file
     credentials = {}

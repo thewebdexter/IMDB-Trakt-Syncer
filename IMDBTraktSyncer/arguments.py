@@ -147,6 +147,11 @@ def clear_user_data(main_directory):
     if user_data_found:
         try_remove(user_data_directory)
 
+    # Chrome profile used with a system installed Chromium (Linux ARM64, containers)
+    system_profile_directory = os.path.join(main_directory, "chrome-profile")
+    if os.path.exists(system_profile_directory):
+        try_remove(system_profile_directory)
+
     print("Clear user data complete.")
 
 def clear_cache(main_directory):

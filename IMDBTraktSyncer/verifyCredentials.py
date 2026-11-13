@@ -7,14 +7,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from IMDBTraktSyncer import authTrakt
 from IMDBTraktSyncer import errorLogger as EL
+from IMDBTraktSyncer import runtime
 
 def print_directory(main_directory):
     print(f"Your settings are saved at:\n{main_directory}")
 
 def prompt_get_credentials():
     # Define the file path
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Default values for missing credentials
     default_values = {
@@ -87,11 +87,12 @@ def prompt_get_credentials():
         values["trakt_token_expires"] = expiration_time
 
     # Merge updated credentials back into the file data
+    original_file_data = dict(file_data)
     file_data.update(values)
 
-    # Save updated credentials back to the file
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(file_data, f, indent=4, separators=(', ', ': '))
+    # Save updated credentials back to the file (only when something changed; this runs for every Trakt request)
+    if file_data != original_file_data or not os.path.isfile(file_path):
+        runtime.write_json_atomic(file_path, file_data)
 
     # Return the credentials
     return values["trakt_client_id"], values["trakt_client_secret"], values["trakt_access_token"], values["trakt_refresh_token"], values["imdb_username"], values["imdb_password"]
@@ -101,8 +102,7 @@ def prompt_sync_ratings():
     Prompts the user to enable or disable syncing of ratings and updates the credentials file accordingly.
     """
     # Define the file path
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Initialize credentials dictionary
     credentials = {}
@@ -149,8 +149,7 @@ def prompt_sync_watchlist():
     Reads and writes to the credentials file only when necessary.
     """
     # Define the file path
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Load credentials file if it exists
     credentials = {}
@@ -195,8 +194,7 @@ def prompt_sync_watch_history():
     credentials file only when necessary.
     """
     # Define the file path
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Load credentials file if it exists
     credentials = {}
@@ -243,8 +241,7 @@ def prompt_mark_rated_as_watched():
     credentials file only when necessary.
     """
     # Define the file path
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Load credentials file if it exists
     credentials = {}
@@ -291,7 +288,7 @@ def check_imdb_reviews_last_submitted():
         bool: True if 240 hours have passed, otherwise False.
     """
     # Define file path
-    file_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Initialize default credentials
     credentials = {}
@@ -337,7 +334,7 @@ def prompt_sync_reviews():
         bool: True if user wants to sync reviews, False otherwise.
     """
     # Define the file path
-    file_path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Attempt to read the sync_reviews value from the credentials file
     try:
@@ -350,7 +347,7 @@ def prompt_sync_reviews():
                 return sync_reviews_value
     except FileNotFoundError:
         # Log the error but continue to prompt the user
-        EL.error("Credentials file not found", exc_info=True)
+        EL.logger.error("Credentials file not found", exc_info=True)
         credentials = {}
 
     # Prompt the user for input until a valid response is given
@@ -374,7 +371,7 @@ def prompt_sync_reviews():
         with open(file_path, 'w', encoding='utf-8') as file:
             json.dump(credentials, file, indent=4, separators=(', ', ': '))
     except Exception as e:
-        EL.error("Failed to write to credentials file", exc_info=True)
+        EL.logger.error("Failed to write to credentials file", exc_info=True)
 
     return sync_reviews_value
 
@@ -384,8 +381,7 @@ def prompt_remove_watched_from_watchlists():
     Reads and updates the decision in a credentials file to avoid repeated prompting.
     """
     # Define the file path for credentials
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Attempt to read the existing configuration
     try:
@@ -432,8 +428,7 @@ def prompt_remove_watchlist_items_older_than_x_days():
     Reads and updates the decision and the number of days in a credentials file to avoid repeated prompting.
     """
     # Define the file path for credentials
-    here = os.path.abspath(os.path.dirname(__file__))
-    file_path = os.path.join(here, 'credentials.txt')
+    file_path = runtime.get_credentials_path()
 
     # Attempt to read the existing configuration
     try:

@@ -1,0 +1,17 @@
+# Secrets and runtime data (credentials are stored in plain text)
+.env
+data/
+credentials.txt
+log.txt
+*.csv
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+
+# Downloaded browsers (desktop installs)
+IMDBTraktSyncer/Chrome/
+IMDBTraktSyncer/Chromedriver/

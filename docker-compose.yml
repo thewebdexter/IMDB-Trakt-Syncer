@@ -1,0 +1,32 @@
+# IMDBTraktSyncer - always-on two-way sync between Trakt and IMDB
+#
+#   cp .env.example .env            # fill in your details
+#   docker compose build
+#   docker compose run --rm imdb-trakt-syncer setup   # one-time Trakt authorisation
+#   docker compose up -d
+#   docker compose logs -f
+services:
+  imdb-trakt-syncer:
+    build: .
+    image: imdb-trakt-syncer:latest
+    container_name: imdb-trakt-syncer
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # credentials.txt, Chrome profile (keeps the IMDB login), logs, caches
+      - ./data:/data
+    # Chromium needs some shared memory; it also runs with --disable-dev-shm-usage
+    shm_size: "512m"
+    # Resource caps: one sync uses ~0.5-1 CPU and 400-900 MB RAM while running,
+    # and the container is almost idle between runs.
+    cpus: "${SYNC_CPUS:-2}"
+    mem_limit: "${SYNC_MEM_LIMIT:-2g}"
+    # Chromium uses ~250 threads for one tab; this only stops runaway process leaks
+    pids_limit: 2048
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

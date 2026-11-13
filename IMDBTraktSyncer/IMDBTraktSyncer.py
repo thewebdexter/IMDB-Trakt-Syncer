@@ -15,6 +15,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from IMDBTraktSyncer import arguments
+from IMDBTraktSyncer import runtime
 
 class PageLoadException(Exception):
     pass
@@ -29,7 +30,8 @@ def main():
     
     args = parser.parse_args()
     
-    main_directory = os.path.dirname(os.path.realpath(__file__))
+    # Package directory by default, or IMDBTRAKTSYNCER_DATA_DIR when set (e.g. a container volume)
+    main_directory = runtime.get_data_directory()
 
     if args.clear_user_data:
         arguments.clear_user_data(main_directory)
@@ -60,11 +62,17 @@ def main():
         from IMDBTraktSyncer import errorLogger as EL
         
         # Check if package is up to date
-        CV.checkVersion()
+        if not runtime.env_flag("IMDBTRAKTSYNCER_SKIP_VERSION_CHECK"):
+            CV.checkVersion()
         
         try:
             # Print credentials directory
             VC.print_directory(main_directory)
+            
+            # Apply credentials/settings supplied through environment variables (non-interactive setups)
+            seeded_keys = runtime.seed_credentials_from_env()
+            if seeded_keys:
+                print(f"Loaded {len(seeded_keys)} setting(s) from environment variables")
             
             # Get credentials
             _, _, _, _, imdb_username, imdb_password = VC.prompt_get_credentials()
@@ -81,7 +89,7 @@ def main():
             browser_type, headless = CC.get_browser_type()
 
             # Set up directory for downloads
-            directory = os.path.dirname(os.path.realpath(__file__))
+            directory = main_directory
 
             # Start WebDriver
             print('Starting WebDriver...')
@@ -113,6 +121,18 @@ def main():
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-extensions")
+            # Cut background work the sync does not need (less CPU, memory and network)
+            options.add_argument("--no-first-run")
+            options.add_argument("--no-default-browser-check")
+            options.add_argument("--disable-background-networking")
+            options.add_argument("--disable-component-update")
+            options.add_argument("--disable-sync")
+            options.add_argument("--disable-default-apps")
+            options.add_argument("--mute-audio")
+            options.add_argument("--disable-features=Translate,MediaRouter,OptimizationHints")
+            if runtime.env_flag("IMDBTRAKTSYNCER_BLOCK_IMAGES"):
+                # Do not download images: noticeably less CPU, memory and bandwidth per IMDB page
+                options.add_argument("--blink-settings=imagesEnabled=false")
             options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
             options.add_argument('--log-level=3')
             
@@ -354,7 +374,12 @@ def main():
                 # Remove duplicates from combined_ratings by IMDB_ID
                 combined_ratings = EH.remove_duplicates_by_imdb_id(combined_ratings)
 
+                # IDs already in either watch history (set lookups instead of scanning both lists per rating)
+                watched_ids = {watch_item['IMDB_ID'] for watch_item in trakt_watch_history}
+                watched_ids.update(watch_item['IMDB_ID'] for watch_item in imdb_watch_history)
+
                 # Loop through combined ratings and check if they are already in both watch histories
+                added_from_ratings = False
                 for item in combined_ratings:
                     imdb_id = item['IMDB_ID']
 
@@ -363,17 +388,19 @@ def main():
                         continue
                     
                     # Check if this imdb_id exists in both trakt_watch_history and imdb_watch_history
-                    if not any(imdb_id == watch_item['IMDB_ID'] for watch_item in trakt_watch_history) and \
-                       not any(imdb_id == watch_item['IMDB_ID'] for watch_item in imdb_watch_history):
+                    if imdb_id not in watched_ids:
                         # If not found in both, add to the appropriate watch history to set list
                         trakt_watch_history_to_set.append(item)
                         imdb_watch_history_to_set.append(item)
                         trakt_watch_history.append(item)
                         imdb_watch_history.append(item)
-                        
-                        # Remove duplicates from trakt and imdb watch history (in case items added with mark_rated_as_watched_value)
-                        trakt_watch_history = EH.remove_duplicates_by_imdb_id(trakt_watch_history)
-                        imdb_watch_history = EH.remove_duplicates_by_imdb_id(imdb_watch_history)
+                        watched_ids.add(imdb_id)
+                        added_from_ratings = True
+                
+                if added_from_ratings:
+                    # Remove duplicates from trakt and imdb watch history (in case items added with mark_rated_as_watched_value)
+                    trakt_watch_history = EH.remove_duplicates_by_imdb_id(trakt_watch_history)
+                    imdb_watch_history = EH.remove_duplicates_by_imdb_id(imdb_watch_history)
             
             # Skip adding shows to trakt watch history, because it will mark all episodes as watched
             trakt_watch_history_to_set = EH.remove_shows(trakt_watch_history_to_set)
@@ -840,7 +867,7 @@ def main():
                             elif media_type == 'episode':
                                 data['episode'] = {
                                     "ids": {
-                                        "imdb": episode_id
+                                        "imdb": imdb_id
                                     }
                                 }
                             else:
@@ -1340,12 +1367,20 @@ def main():
             EH.report_error(error_message)
             EL.logger.error(error_message, exc_info=True)
             
-            # Close the driver and stop the service if they were initialized
+            # Close the driver and stop the service if they were initialized.
+            # Each step is guarded: if the browser already died, close() raises and would
+            # otherwise skip quit()/stop() and leave Chromium processes running.
             if 'driver' in locals() and driver is not None:
-                driver.close()
-                driver.quit()
+                for cleanup in (driver.close, driver.quit):
+                    try:
+                        cleanup()
+                    except Exception:
+                        pass
             if 'service' in locals() and service is not None:
-                service.stop()
+                try:
+                    service.stop()
+                except Exception:
+                    pass
 
 if __name__ == '__main__':
     main()

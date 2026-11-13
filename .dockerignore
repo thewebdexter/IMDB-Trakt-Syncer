@@ -1,0 +1,11 @@
+.git
+.github
+**/__pycache__
+**/*.pyc
+data
+.env
+**/credentials.txt
+**/log.txt
+**/*.csv
+IMDBTraktSyncer/Chrome
+IMDBTraktSyncer/Chromedriver
